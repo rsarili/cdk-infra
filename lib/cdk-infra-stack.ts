@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling'
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2'
+import * as rds from 'aws-cdk-lib/aws-rds'
 
 
 export class CdkInfraStack extends cdk.Stack {
@@ -19,8 +20,13 @@ export class CdkInfraStack extends cdk.Stack {
         },
         {
           cidrMask: 24,
-          name:'private',
+          name:'application',
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS
+        },
+        {
+          cidrMask: 24,
+          name:'db',
+          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
         }
       ],
       maxAzs: 3
@@ -67,7 +73,7 @@ export class CdkInfraStack extends cdk.Stack {
       machineImage: new ec2.AmazonLinuxImage({generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2}),
       securityGroup: webserverSG,
       minCapacity: 2,
-      desiredCapacity: 3,
+      maxCapacity: 5,
       vpcSubnets: {
         subnetType: ec2.SubnetType.PUBLIC
       },
@@ -117,6 +123,51 @@ export class CdkInfraStack extends cdk.Stack {
     // 👇 add the ALB DNS as an Output
     new cdk.CfnOutput(this, 'albDNS', {
       value: alb.loadBalancerDnsName,
+    });
+
+    const rdsSG = new ec2.SecurityGroup(this, 'cdk-rds-sg',{
+      vpc,
+    })
+    rdsSG.addIngressRule(
+      webserverSG,
+      ec2.Port.tcp(5432),
+      'allow webservers',
+    );
+
+    const dbInstance = new rds.DatabaseInstance(this, 'db-instance', {
+      vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+      },
+      engine: rds.DatabaseInstanceEngine.postgres({
+        version: rds.PostgresEngineVersion.VER_14_4,
+      }),
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.BURSTABLE3,
+        ec2.InstanceSize.MICRO,
+      ),
+      credentials: rds.Credentials.fromGeneratedSecret('postgres'),
+      multiAz: false,
+      allocatedStorage: 100,
+      maxAllocatedStorage: 105,
+      allowMajorVersionUpgrade: false,
+      autoMinorVersionUpgrade: true,
+      backupRetention: cdk.Duration.days(0),
+      deleteAutomatedBackups: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      deletionProtection: false,
+      databaseName: 'todosdb',
+      publiclyAccessible: false,
+      securityGroups: [rdsSG]
+    });
+
+
+    new cdk.CfnOutput(this, 'dbEndpoint', {
+      value: dbInstance.instanceEndpoint.hostname,
+    });
+
+    new cdk.CfnOutput(this, 'secretName', {
+      value: dbInstance.secret?.secretName!,
     });
   }
 }
